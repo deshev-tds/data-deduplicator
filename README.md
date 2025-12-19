@@ -2,7 +2,7 @@
 Why this is not “just" cosine similarity? 
 
 This repository demonstrates a general approach to cleaning noisy, real-world datasets.
-Although I used it to clean-up a noisy dataset for another project, it is NOT a recipe tool.
+Although I used it to clean-up a noisy dataset for culinary project (of all things...), it is NOT a recipe tool.
 
 The actual problem I had was:
 how to deduplicate semantically similar records without destroying meaningful variation.
