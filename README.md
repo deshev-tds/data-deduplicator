@@ -1,172 +1,116 @@
-# Hybrid deduplication engine
-Why this is not “just" cosine similarity? 
+# Hybrid Deduplication Engine (The "Anchor Veto" Approach)
 
-This repository demonstrates a general approach to cleaning noisy, real-world datasets.
-Although I used it to clean-up a noisy dataset for culinary project (of all things...), it is NOT a recipe tool.
+### Why this is not “just" cosine similarity?
 
-The actual problem I had was:
-how to deduplicate semantically similar records without destroying meaningful variation.
-(e.g. having 40,000 recipes in a dataset with the same names but different ingredients, the same ingredients but different names, 
-very similar ingredients and names, but different prep methods, or different everything, but essentially the same dish. Mind -> blown.)
+This repository demonstrates a production-grade approach to cleaning noisy, real-world datasets.
 
-If your domain is job ads, research abstracts, product listings, support tickets, or scraped web content,
-the same principles apply with minimal adaptation.
+Although I built it to prevent a diplomatic incident involving Balkan sausages (read the [article](https://www.linkedin.com/in/damyandeschev/) for the backstory), this is **NOT** just a recipe tool.
 
---------------------------------------------------
-What problem this solves
---------------------------------------------------
+The core problem I solve here is: **How to deduplicate semantically similar records without destroying meaningful variation?**
 
-In theory, semantic embeddings + cosine similarity should be enough.
-In practice, they are not.
+If your domain is job ads, legal clauses, medical records, or e-commerce products, the same principles apply.
+
+---
+
+## The Problem: Why "Embeddings" are not a magic wand
+
+In theory, `Embeddings + Vector DB + Cosine Similarity` should be enough to clean data.
+In practice, that pipeline is a "hallucination machine."
 
 Real datasets suffer from:
-- paraphrasing
-- templated text
-- boilerplate sections
-- partial copies
-- missing fields
-- domain-specific noise
+* **The "Vibe" Problem:** Vector search finds things that *feel* related, not things that *are* the same.
+* **The "Boilerplate" Trap:** Two legal contracts might share 90% identical boilerplate text but differ in the one clause that matters ("Termination for Cause" vs "Termination for Convenience"). Vector search sees 90% overlap and merges them.
+* **The "Omelette" Fallacy:** If you compare raw features (e.g., ingredients), a Chocolate Cake and a Quiche look identical (Flour, Eggs, Oil, Salt).
 
-Cosine similarity alone will happily merge things that:
-- describe different entities in similar language
-- share structure but not meaning
-- are semantically close but operationally distinct
+If I deduplicated purely on vector similarity, I would have collapsed distinct entities into a single, corrupted record.
 
-This pipeline exists because naïve semantic deduplication breaks datasets silently.
+---
 
---------------------------------------------------
-Why cosine similarity alone is insufficient
---------------------------------------------------
+## The Solution: A Hybrid "Veto" Architecture
 
-Cosine similarity answers a fairly narrow question:
-“How close are these two vectors in embedding space?”
+I do not trust the AI blindly. I use a layered "Check and Balance" system.
 
-It does NOT answer:
-- Are these records functionally the same?
-- Do they represent the same real-world entity?
-- Is the overlap meaningful or accidental?
+### Phase 1: The Boring Stuff (Deterministic)
+Before firing up the GPUs, I do standard string normalization.
+* **Logic:** `lower()`, `strip()`, remove special chars.
+* **Why:** It is faster and safer to merge "Chicken Rice" and "chicken-rice" using code than using a neural network.
 
-In noisy datasets, high cosine similarity often comes from:
-- shared phrasing
-- repeated instructions
-- generic descriptions
-- cultural or domain-specific boilerplates
+### Phase 2: Candidate Generation (Semantic)
+I use a Sentence Transformer (default: `paraphrase-multilingual-MiniLM-L12-v2`) to create embeddings and find candidates with high cosine similarity (`>0.94`).
+* **Role:** This finds the "Hidden" duplicates (e.g., "Roasted Bird" vs "Chicken in Oven").
+* **Status:** These are just *candidates*, not confirmed merges.
 
-If you deduplicate purely on cosine similarity, you will:
-- lose legitimate variants
-- collapse distinct items
-- introduce subtle, hard-to-detect errors
+### Phase 3: The "Anchor Veto" (The Guardrail)
+**This is the most important part.**
+Even if the Vector Model says two records are 99% similar, I run a "Veto" check on the Title/Header.
+* **The Logic:** I strip "noise" words (prepositions, conjunctions) from the titles and run a TF-IDF comparison on the remaining "Anchor" nouns.
+* **The Rule:** If the semantic vectors match, but the **Identity Anchors** (the nouns) do not, I block the merge.
+* *Example:* This stops the model from merging "Lukanka" and "Sudzhuk" (two different sausages that look identical to a vector model).
 
-These errors are worse than duplicates.
+### Phase 4: Domain Verification (Jaccard)
+I verify the "substance" of the record.
+* **The Logic:** In this repo, I compare ingredient lists using Jaccard Similarity.
+* **The Twist:** I strip ubiquitous ingredients (Salt, Water, Oil) before comparing. This forces the model to compare the *soul* of the item, not its chemistry set.
 
---------------------------------------------------
-The hybrid approach
---------------------------------------------------
+---
 
-This "engine" uses a layered decision model:
+## The Graph Logic (Cluster Resolution)
 
-1. Deterministic rules first
-   Exact or near-exact matches are resolved cheaply and predictably.
-   This removes obvious noise without touching semantics.
+Duplicates don't come in pairs; they come in messy clusters.
+Instead of pairwise deletion (which is order-dependent and buggy), I build a **NetworkX Graph**:
 
-2. Semantic similarity second
-   Sentence embeddings are used to propose candidate duplicates,
-   not to make final decisions.
+1.  **Nodes:** All records.
+2.  **Edges:** "Safe" merges confirmed by the 4-phase logic above.
+3.  **Resolution:** I find connected components (clusters) and collapse them into a single survivor.
 
-3. Domain signal as a filter
-   A secondary signal (ingredients, attributes, features, tags)
-   is required to confirm semantic similarity.
+**The Survivor Policy:**
+I don't pick at random. The script keeps the record that is:
+1.  Longest (most descriptive).
+2.  Most "complete" (highest number of structured features).
 
-Only when BOTH:
-- semantic similarity is high
-- domain overlap is sufficient
+---
 
-do two records get treated as duplicates.
+## Generalizing this beyond Recipes
 
-This mirrors how I, a human, reason about sameness - provided enough coffee has been part of the process. 
+To adapt this pipeline to your job (Fintech, Legal, E-commerce), change these three functions in `dedup_demonstrator.py`:
 
---------------------------------------------------
-Why a graph, not pairwise deletion
---------------------------------------------------
+1.  **The "Anchor" (`get_anchor_text`):**
+    * *Recipes:* Title minus "with", "and", "in".
+    * *E-commerce:* Product Name minus "Pro", "Max", "2024", "Edition".
+    * *Legal:* Clause Header minus "Section", "Paragraph".
 
-Duplicates come in cluster, not pairs.
+2.  **The "Substance" (`products_extracted`):**
+    * *Recipes:* Ingredients.
+    * *HR:* Skills list (Python, SQL, Management).
+    * *Retail:* Specs (Size, Color, Material).
 
-By modeling the dataset as a graph:
-- nodes are records
-- edges represent “likely duplicate” relationships
+3.  **The Stop Lists (`STOP_INGREDIENTS`):**
+    * Remove the high-frequency noise specific to your industry (e.g., "manager" in job titles, "inc." in company names).
 
-we can resolve entire connected components at once.
+---
 
-This avoids order-dependent deletion bugs and makes the logic auditable.
+## How to use
 
---------------------------------------------------
-Survivor selection philosophy
---------------------------------------------------
+The script `dedup_demonstrator.py` is self-contained.
 
-When multiple records represent the same underlying entity,
-the goal is not correctness in the abstract,
-but information preservation.
+1.  **Prerequisites:** Python 3.8+.
+2.  **Install:** The script detects missing packages (`torch`, `sentence-transformers`, `networkx`, `pandas`) and auto-installs them.
+3.  **Hardware:** It automatically detects CUDA (Nvidia) or MPS (Mac Silicon) for acceleration.
+4.  **Run:**
+    ```bash
+    python dedup_demonstrator.py
+    ```
+5.  **Output:**
+    * `bg-recipes-deduplicated_final.tsv`: The clean dataset.
+    * `report_merges.csv`: A log of exactly what was merged and why (auditable).
+    * `report_near_misses.csv`: A log of what the AI *wanted* to merge but the "Veto" stopped (entertaining reading).
 
-The "survivor" is chosen to maximize:
-- data completeness
-- descriptive richness
-- downstream utility
+---
 
-This is explicitly a data engineering decision, not a linguistic one.
+## Conceptual Summary
 
---------------------------------------------------
-Generalizing this beyond recipes
---------------------------------------------------
+* **Not a classifier.**
+* **Not a black box.**
+* **Not "AGI cleaning your data".**
 
-To adapt this pipeline to another domain, replace:
-
-- description
-  with the main free-text field you embed
-- products_extracted
-  with any structured or semi-structured signal that encodes substance
-  (skills, features, tags, components, entities, attributes)
-- ingredient overlap
-  with an overlap or similarity function appropriate to your domain
-
-Everything else remains the same.
-
---------------------------------------------------
-What this is (not), conceptually
---------------------------------------------------
-
-- not a classifier.
-- not a magical deduplicator.
-- not “Sam Altman cleaning your data with a magic wand or whatever”.
-
-It is a way to combine:
-- statistical similarity
-- domain constraints
-- deterministic rules
-
-into a process that fails conservatively.
-
---------------------------------------------------
-Why the example is recipes
---------------------------------------------------
-
-Recipes are:
-- multilingual
-- heavily paraphrased
-- semi-structured
-- culturally noisy
-- I needed those for a project anyway, so might as well. 
-
-If this approach works for kyufteta, shopska salata & spicy rakia (Bulgarian things; don't ask)
-it should work for most scraped human text.
-
---------------------------------------------------
-How to use it
---------------------------------------------------
-
-Read the script.
-Change the domain signals.
-Adjust the thresholds.
-Inspect the output.
-
-The code is intentionally explicit and linear.
-Nothing is hidden, nothing is assumed (I think).
+It is a probabilistic engine with deterministic brakes. I favor **Precision over Recall**: in my case it is better to leave two duplicates in the database than to accidentally merge entities because they sit in the same vector neighborhood. If your case differs, feel free to adapt the logic to your needs. 
